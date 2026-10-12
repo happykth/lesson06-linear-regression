@@ -3,126 +3,163 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
+st.set_page_config(page_title="기온 예측기")
+
+st.title("🌡️ 기온 예측기")
+
+st.markdown(
+    "서울의 연평균기온 추이를 분석하고, 기후 변화의 경향을 파악한 뒤 "
+    "회귀 분석을 활용해 미래 기온을 예측합니다."
+)
+
 
 @st.cache_data
-def load_and_process():
-    """서울 기온 CSV를 로드하고 연도별 평균기온을 집계합니다."""
+def load_data():
+    """서울 기온 CSV를 불러와 연도별 집계 데이터를 반환합니다."""
     url = (
         "https://raw.githubusercontent.com/greatsong/modudata/"
         "bb860932644270ad1199f10d3e7670e30231bce4/data/seoul.csv"
     )
     df = pd.read_csv(url, encoding="utf-8-sig")
-
-    # 날짜 열을 datetime으로 파싱
+    df = df[["날짜", "지점", "평균기온", "최저기온", "최고기온"]].copy()
     df["날짜"] = pd.to_datetime(df["날짜"])
-
-    # 평균기온이 NA인 행 제거
     df = df.dropna(subset=["평균기온"])
-
-    # 2025년 이후 데이터 제거 (클래스 참조 기간: 2025년까지)
-    df = df[df["날짜"].dt.year <= 2025]
-
-    # 연도 파생
     df["연도"] = df["날짜"].dt.year
-
-    # 연도별 집계: 평균기온과 관측일수
-    yearly = (
+    df = df[df["연도"] <= 2025]
+    grouped = (
         df.groupby("연도")
-        .agg(연평균기온=("평균기온", "mean"), 관측일수=("평균기온", "count"))
+        .agg(
+            평균기온=("평균기온", "mean"),
+            관측수=("평균기온", "count"),
+        )
         .reset_index()
     )
-
-    # 300일 미만 관측 연도 제거
-    yearly = yearly[yearly["관측일수"] >= 300]
-    return yearly
+    grouped = grouped[grouped["관측수"] >= 300]
+    return grouped
 
 
-def main():
-    st.set_page_config(page_title="기온 예측기", page_icon="🌡️")
-    st.title("🌡️ 기온 예측기")
+data = load_data()
+years = data["연도"].values
+temps = data["평균기온"].values
 
-    st.markdown(
-        "서울의 연평균기온 데이터를 기반으로 선형 회귀분석을 수행하고, "
-        "선택한 연도의 예상 기온을 예측합니다."
+# ── 전체 기간 회귀 분석 ──
+full_coeffs = np.polyfit(years, temps, 1)
+full_slope_per_year = full_coeffs[0]
+full_intercept = full_coeffs[1]
+full_slope_per_100 = full_slope_per_year * 100
+r_full = float(np.corrcoef(years, temps)[0, 1])
+
+n_years = len(years)
+first_year = int(years.min())
+last_year = int(years.max())
+
+# ── 최근 20년 회귀 분석 ──
+recent = data.tail(20)
+recent_years = recent["연도"].values
+recent_temps = recent["평균기온"].values
+recent_coeffs = np.polyfit(recent_years, recent_temps, 1)
+recent_slope_per_year = recent_coeffs[0]
+recent_intercept = recent_coeffs[1]
+recent_slope_per_100 = recent_slope_per_year * 100
+r_recent = float(np.corrcoef(recent_years, recent_temps)[0, 1])
+
+ratio = recent_slope_per_100 / full_slope_per_100
+recent_first_year = int(recent_years.min())
+recent_last_year = int(recent_years.max())
+
+# ══════════════════════════════════════════════════
+# 출력 영역
+# ══════════════════════════════════════════════════
+
+# 1) 상관계수 + 사용 연도 정보
+st.markdown(f"**피어슨 상관계수 (r):** {r_full:.2f}")
+st.markdown(
+    f"**회귀 직선에 사용한 해:** {n_years}개 · {first_year}년 ~ {last_year}년"
+)
+
+# 2) 100년당 상승폭 헤드라인
+st.markdown(
+    f"## 📈 100년에 약 {full_slope_per_100:.1f} ℃ 상승"
+)
+
+# 3) 전체 기간 vs 최근 20년 비교 (2열)
+col1, col2 = st.columns(2)
+
+with col1:
+    st.metric(
+        label=f"전체 기간 ({first_year}~{last_year})",
+        value=f"{full_slope_per_100:.1f} ℃/100년",
     )
 
-    yearly = load_and_process()
-
-    연도 = yearly["연도"].values
-    연평균기온 = yearly["연평균기온"].values
-
-    # 피어슨 상관계수 계산
-    corr = np.corrcoef(연도, 연평균기온)[0, 1]
-
-    # 1차 선형 회귀 (최소자승법)
-    slope, intercept = np.polyfit(연도, 연평균기온, 1)
-
-    first_year = int(연도.min())
-    last_year = int(연도.max())
-    n_years = len(연도)
-
-    # 분석 결과 출력
-    st.write(f"**피어슨 상관계수 (r):** {corr:.4f}")
-    st.write(
-        f"**회귀 직선에 사용한 해:** {n_years}개 · {first_year}년 ~ {last_year}년"
+with col2:
+    recent_delta = recent_slope_per_100 - full_slope_per_100
+    st.metric(
+        label=f"최근 20년 ({recent_first_year}~{recent_last_year})",
+        value=f"{recent_slope_per_100:.1f} ℃/100년",
+        delta=f"+{recent_delta:.1f} ℃/100년",
+        delta_color="normal",
     )
 
-    # 연도 슬라이더
-    selected_year = st.slider("연도를 선택하세요", min_value=1900, max_value=2100, value=2025)
+# 비율 문장
+st.markdown(
+    f"최근 20년의 기온 상승 속도는 전체 기간의 약 **{ratio:.1f}배**에 달합니다."
+)
 
-    # 예측 온도 계산
-    predicted_temp = float(slope * selected_year + intercept)
+# 4) 슬라이더 + 예측 기온
+selected_year = st.slider("예측 연도를 선택하세요", min_value=1900, max_value=2100, value=2025)
+predicted_temp = full_slope_per_year * selected_year + full_intercept
 
-    # 큰 예측값 표시 (headline + metric)
-    st.markdown(f"## 📊 {predicted_temp:.1f} ℃")
-    st.metric(label="예상 연평균기온", value=f"{predicted_temp:.1f} ℃")
+st.markdown(f"## 🌡️ {selected_year}년 예측 기온")
+st.metric(label="연평균기온 예측", value=f"{predicted_temp:.1f} ℃")
 
-    # 선택한 연도가 피팅 범위 내인지 밖인지 안내
-    if selected_year < first_year or selected_year > last_year:
-        st.caption(
-            "⚠️ 선택한 연도는 회귀 모델의 피팅 범위를 벗어납니다. "
-            "해당 구간은 외삽(추정)입니다."
-        )
-    else:
-        st.caption("✅ 선택한 연도는 회귀 모델의 피팅 범위 내에 있습니다.")
+if selected_year <= last_year:
+    st.markdown(f"※ {selected_year}년은 관측 데이터 범위 내입니다.")
+else:
+    st.markdown(f"※ {selected_year}년은 관측 데이터 범위 밖이므로 외삽 예측입니다.")
 
-    # Plotly 차트 생성
-    fig = go.Figure()
+# 5) Plotly 차트
+x_range = np.linspace(1900, 2100, 200)
+full_line = full_slope_per_year * x_range + full_intercept
+# 최근 20년 직선은 실제 관측 구간에만 그려 축 스케일이 망가지지 않도록 함
+recent_x_range = np.linspace(recent_first_year, recent_last_year, 100)
+recent_line = recent_slope_per_year * recent_x_range + recent_intercept
 
-    # 산점도: 관측값
-    fig.add_trace(
-        go.Scatter(
-            x=연도,
-            y=연평균기온,
-            mode="markers",
-            name="연평균기온 (관측값)",
-            marker=dict(size=6, color="steelblue"),
-        )
+fig = go.Figure()
+fig.add_trace(
+    go.Scatter(
+        x=years,
+        y=temps,
+        mode="markers",
+        name="연평균기온 (관측)",
+        marker=dict(color="blue", size=6),
     )
-
-    # 회귀 직선 (슬라이더 전체 범위 1900~2100까지 확장)
-    x_line = np.arange(1900, 2101)
-    y_line = slope * x_line + intercept
-
-    fig.add_trace(
-        go.Scatter(
-            x=x_line,
-            y=y_line,
-            mode="lines",
-            name="예측 직선",
-            line=dict(color="red", dash="dash", width=2),
-        )
+)
+fig.add_trace(
+    go.Scatter(
+        x=x_range,
+        y=full_line,
+        mode="lines",
+        name=f"전체 기간 추세 (r={r_full:.2f})",
+        line=dict(dash="dash", color="blue"),
     )
-
-    fig.update_layout(
-        xaxis_title="연도",
-        yaxis_title="연평균기온 (℃)",
-        legend=dict(x=0, y=1),
-        template="plotly_white",
+)
+fig.add_trace(
+    go.Scatter(
+        x=recent_x_range,
+        y=recent_line,
+        mode="lines",
+        name=f"최근 20년 추세 (r={r_recent:.2f})",
+        line=dict(color="orange"),
     )
+)
 
-    st.plotly_chart(fig, use_container_width=True)
+fig.update_layout(
+    xaxis_title="연도",
+    yaxis_title="연평균기온 (℃)",
+    legend=dict(title="구분"),
+    margin=dict(l=10, r=10, t=30, b=10),
+)
+
+st.plotly_chart(fig, use_container_width=True)
 
 
-if __name__ == "__main__":
-    main()
